@@ -5,7 +5,7 @@ import pinoHttp from "pino-http";
 
 import { env } from "./config/env.js";
 import healthRoutes from "./routes/health.routes.js";
-import testJobRoutes from "./routes/test-job.routes.js";
+import campaignRoutes from "./routes/campaign.routes.js";
 import { errorHandler } from "./middleware/error.middleware.js";
 
 export const app = express();
@@ -34,6 +34,6 @@ app.get("/", (_req, res) => {
 });
 
 app.use("/api/health", healthRoutes);
-app.use("/api/test/jobs", testJobRoutes);
+app.use("/api/campaigns", campaignRoutes);
 
 app.use(errorHandler);

@@ -3,6 +3,8 @@ import type {
     Request
 } from "express";
 
+import { AppError } from "../utils/app-error.js";
+
 export const errorHandler: ErrorRequestHandler = (
     err,
     req: Request,
@@ -12,6 +14,16 @@ export const errorHandler: ErrorRequestHandler = (
     console.error("Unhandled error:", err);
 
     if (res.headersSent) {
+        return;
+    }
+
+    if (err instanceof AppError) {
+        res.status(err.statusCode).json({
+            success: false,
+            message: err.message,
+            path: req.path
+        });
+
         return;
     }
 
