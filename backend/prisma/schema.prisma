@@ -130,7 +130,8 @@ model EmailJob {
   failedAt       DateTime?
 
   providerMessageId String?
-  errorMessage       String?
+  previewUrl        String?
+  errorMessage      String?
 
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt

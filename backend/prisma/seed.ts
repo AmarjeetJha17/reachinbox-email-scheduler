@@ -1,8 +1,26 @@
-import { PrismaClient } from "@prisma/client";
+import nodemailer from "nodemailer";
+
+import {
+    PrismaClient
+} from "@prisma/client";
+
+import {
+    encryptSecret
+} from "../src/utils/crypto.js";
 
 const prisma = new PrismaClient();
 
 async function main() {
+    console.log("Creating Ethereal test account...");
+
+    const ethereal =
+        await nodemailer.createTestAccount();
+
+    console.log(
+        "✅ Ethereal account created:",
+        ethereal.user
+    );
+
     const user = await prisma.user.upsert({
         where: {
             googleId: "development-google-id"
@@ -12,9 +30,10 @@ async function main() {
 
         create: {
             googleId: "development-google-id",
+
             email: "dev@example.com",
-            name: "Development User",
-            avatarUrl: null
+
+            name: "Development User"
         }
     });
 
@@ -23,23 +42,46 @@ async function main() {
             id: "11111111-1111-4111-8111-111111111111"
         },
 
-        update: {},
+        update: {
+            userId: user.id,
+
+            name: "Development Ethereal Sender",
+
+            fromEmail: ethereal.user,
+
+            smtpHost: ethereal.smtp.host,
+
+            smtpPort: ethereal.smtp.port,
+
+            smtpUser: ethereal.user,
+
+            smtpPasswordEncrypted:
+                encryptSecret(ethereal.pass),
+
+            secure: ethereal.smtp.secure,
+
+            hourlyLimit: 20
+        },
 
         create: {
             id: "11111111-1111-4111-8111-111111111111",
 
             userId: user.id,
 
-            name: "Development Sender",
-            fromEmail: "dev@example.com",
+            name: "Development Ethereal Sender",
 
-            smtpHost: "smtp.ethereal.email",
-            smtpPort: 587,
+            fromEmail: ethereal.user,
 
-            smtpUser: "placeholder",
-            smtpPasswordEncrypted: "placeholder",
+            smtpHost: ethereal.smtp.host,
 
-            secure: false,
+            smtpPort: ethereal.smtp.port,
+
+            smtpUser: ethereal.user,
+
+            smtpPasswordEncrypted:
+                encryptSecret(ethereal.pass),
+
+            secure: ethereal.smtp.secure,
 
             hourlyLimit: 20
         }
@@ -50,14 +92,16 @@ async function main() {
     console.log("🌱 Development seed complete");
     console.log("======================================");
     console.log("User ID:", user.id);
-    console.log("User email:", user.email);
-    console.log("Sender ID:", sender.id);
+    console.log("User:", user.email);
+    console.log("Sender:", sender.fromEmail);
+    console.log("SMTP:", sender.smtpHost);
+    console.log("Port:", sender.smtpPort);
     console.log("======================================");
 }
 
 main()
     .catch((error) => {
-        console.error(error);
+        console.error("Seed failed:", error);
         process.exit(1);
     })
     .finally(async () => {
