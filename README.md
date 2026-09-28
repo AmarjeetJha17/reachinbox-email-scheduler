@@ -1,177 +1,179 @@
 # ReachInbox Email Scheduler
 
-## Overview
+## Project Overview
 
-Production-oriented email scheduling platform built using
-React, Express, PostgreSQL, Redis, BullMQ and Ethereal SMTP.
+A production-oriented email scheduling platform built using React, Express, PostgreSQL, Redis, BullMQ and Ethereal SMTP. It is designed to handle scheduled email campaigns with strict rate limiting, concurrent processing, robust retry mechanisms, and crash recovery.
 
 ## Architecture
 
 ```text
-React
- ↓
-Express
- ├── PostgreSQL
- └── Redis/BullMQ
-       ↓
-     Worker
-       ↓
-   Rate Limiter
-       ↓
-   Ethereal SMTP
+                    ┌──────────────────┐
+                    │ React Frontend   │
+                    │ TypeScript       │
+                    └────────┬─────────┘
+                             │
+                             ▼
+                    ┌──────────────────┐
+                    │ Express API      │
+                    └───────┬──────────┘
+                            │
+                ┌───────────┴───────────┐
+                ▼                       ▼
+        ┌──────────────┐        ┌──────────────┐
+        │ PostgreSQL   │        │ Redis        │
+        │ Prisma       │        │ BullMQ       │
+        └──────────────┘        └──────┬───────┘
+                                       │
+                                       ▼
+                                ┌──────────────┐
+                                │ Worker       │
+                                │ Concurrency  │
+                                └──────┬───────┘
+                                       │
+                              ┌────────┴────────┐
+                              ▼                 ▼
+                       Rate Limiter        SMTP Send
+                         Redis             Ethereal
 ```
 
-## Features
+## Tech Stack
 
-- Google OAuth
-- Multiple sender accounts
-- CSV/TXT lead import
-- Email scheduling
-- Delayed BullMQ jobs
-- Per-sender hourly rate limiting
-- Minimum send delay
-- Concurrent workers
-- Idempotent job processing
-- Retry/backoff
-- Restart recovery
-- Queue reconciliation
-- Scheduled/Sent dashboard
+- **Node.js / Express** (Backend API & Worker)
+- **TypeScript** (Strict typings across the stack)
+- **React / Vite** (Frontend SPA)
+- **PostgreSQL / Prisma** (Primary database & ORM)
+- **Redis / BullMQ** (Job queue & atomic rate limiting)
+- **Nodemailer** (SMTP integration)
+- **Docker / Docker Compose** (Containerization)
+- **Vitest** (Testing framework)
 
-## Technology
+## Prerequisites
 
-- Node.js
-- TypeScript
-- Express
-- React
-- PostgreSQL
-- Prisma
-- Redis
-- BullMQ
-- Nodemailer
-- Ethereal
-- Docker
+- Node.js (v24 or later recommended)
+- Docker Desktop (or separate PostgreSQL & Redis installations)
+- A Google Cloud Platform project (for OAuth credentials)
+- An Ethereal Email account (for safe SMTP testing)
 
-## Local Setup
+## Environment Variables
 
-### 1. Clone repository
-
-### 2. Configure environment
-
-Copy:
+Copy `.env.example` to `.env` in the root folder:
 
 ```bash
 cp .env.example .env
 ```
 
-### 3. Start PostgreSQL and Redis
+Key environment variables:
+- `DATABASE_URL`: Connection string to PostgreSQL
+- `REDIS_URL`: Connection string to Redis
+- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`: OAuth credentials
+- `JWT_SECRET`: For session management
+- `WORKER_CONCURRENCY`: Controls the number of emails the worker can process concurrently.
 
+## Setup Instructions
+
+### Google OAuth Setup
+1. Go to the Google Cloud Console.
+2. Create a new project and configure the OAuth consent screen.
+3. Create OAuth 2.0 Client IDs (Web application).
+4. Add authorized redirect URIs (e.g., `http://localhost:5173/`).
+5. Copy the Client ID and Secret into your `.env` file.
+
+### Ethereal Setup
+1. Go to https://ethereal.email/ and create an account.
+2. Ethereal credentials are automatically provisioned by the seed script, but you can also configure your own via the UI.
+
+### Database, Redis/BullMQ Setup
+Start the local infrastructure using Docker:
 ```bash
 docker compose up -d postgres redis
 ```
 
-### 4. Install backend dependencies
-
+### Local Setup
+Install backend dependencies and prepare the database:
 ```bash
 cd backend
 npm install
-```
-
-### 5. Run migrations
-
-```bash
 npx prisma migrate dev
-```
-
-### 6. Seed development data
-
-```bash
 npx prisma db seed
 ```
 
-### 7. Start backend
-
+Start the backend API server:
 ```bash
 npm run dev
 ```
 
-### 8. Start worker
-
+### Worker Setup
+In a separate terminal, start the background worker:
 ```bash
+cd backend
 npm run worker
 ```
 
-### 9. Start frontend
-
+### Frontend Setup
+In a separate terminal, start the React application:
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
 
-## Docker Setup
+## Docker Setup (Full Stack)
 
+To run the entire application (Frontend, Backend, Worker, DB, Redis) in production mode via Docker Compose:
 ```bash
 docker compose up -d --build
 ```
+The frontend will be available at `http://localhost`, and the API at `http://localhost:4000`.
 
-## Authentication
+## Testing
 
-Google OAuth authorization-code flow.
+Run tests across the frontend and backend using Vitest:
+```bash
+cd backend && npm test
+cd frontend && npm test
+```
 
-## Scheduling
+## Core Features & Mechanics
 
-BullMQ delayed jobs are used instead of cron.
+### CSV/TXT Format
+The frontend accepts both `.csv` and `.txt` file uploads (up to 5MB). The lead parser scans the text block, automatically extracts valid email addresses, and discards duplicates, ignoring headers or specific column names.
 
-## Rate Limiting
+### Scheduling Behavior
+Instead of a polling `cron` job, the platform utilizes **BullMQ delayed jobs**. When a campaign is scheduled, jobs are instantly pushed to Redis with an execution delay timestamp. This ensures precise, immediate execution when the time comes.
 
-Per-sender distributed rate limiting is implemented with Redis
-atomic operations.
+### Rate Limiting
+Per-sender rate limiting is enforced precisely. A sliding-window or atomic Redis operations are used to reserve capacity before attempting to send an email. If the hourly limit is reached, the job is bounced back to BullMQ with a calculated delay until the next available slot.
 
-## Concurrency
+### Concurrency
+Worker concurrency is strictly managed via the `WORKER_CONCURRENCY` environment variable. BullMQ handles fetching jobs concurrently while ensuring safe parallel execution without overlapping same-job processing.
 
-Worker concurrency is configurable through:
+### Idempotency
+Email delivery is idempotent. The system uses the database-generated `EmailJob.id` as the deterministic BullMQ `jobId`. This ensures that even in the case of network glitches or retry loops, an email job is never queued or processed twice.
 
-`WORKER_CONCURRENCY`
+### Restart Recovery & Reconciliation
+**PostgreSQL is the source of truth.** Redis/BullMQ is purely the execution layer.
+When the worker process starts (or restarts after a crash), a **Reconciliation Process** runs:
+1. It recovers stale `PROCESSING` records older than 15 minutes.
+2. It finds all `SCHEDULED`, `QUEUED`, or `RATE_LIMITED` records in PostgreSQL.
+3. It validates if the corresponding job exists in BullMQ.
+4. If missing (e.g., Redis was flushed), it seamlessly recreates the delayed BullMQ job using the deterministic `jobId`.
 
-## Reliability
-
-PostgreSQL is the source of truth for campaign and email-job state.
-Redis/BullMQ is the execution and delayed-job layer.
-
-Scheduled email jobs are persisted in both PostgreSQL and BullMQ.
-
-On worker startup, the application runs a reconciliation process
-that:
-
-1. Recovers stale PROCESSING records older than 15 minutes.
-2. Finds SCHEDULED/QUEUED/RATE_LIMITED EmailJob records.
-3. Checks whether the corresponding BullMQ job exists.
-4. Recreates missing delayed jobs using the EmailJob ID as the
-   deterministic BullMQ job ID.
-
-Email scheduling itself does not use cron. Delayed delivery is
-handled by BullMQ.
-
-The 15-minute stale-processing threshold is intentionally longer
-than the expected SMTP processing time. This provides a recovery
-window for worker crashes while minimizing the possibility of
-resetting a legitimately long-running send operation.
-
-## Idempotency
-
-EmailJob IDs are deterministic BullMQ job IDs and unique
-database identifiers.
-
-## Retry Behavior
-
-SMTP failures use BullMQ retry/backoff.
+## Assumptions
+- The maximum file upload size of 5 MB is sufficient for assessment purposes.
+- Ethereal SMTP is used as the primary testing ground to avoid real-world spam policies during development.
+- Google OAuth is sufficient for user authentication.
 
 ## Trade-offs
+- **Conservative rate-limit reservation:** The system reserves limit capacity *before* sending. This ensures limits are never exceeded but can briefly lock capacity if an SMTP send fails immediately.
+- **SMTP crash window:** If the worker crashes immediately *after* Ethereal accepts the email but *before* marking it as sent in PostgreSQL, the job may remain in `PROCESSING` and eventually be retried. Real-world systems might require stricter message-id deduplication logs.
+- **15-minute stale-processing threshold:** Provides an extremely safe recovery window for legitimately slow SMTP operations. The trade-off is a 15-minute delay in recovering crashed jobs.
+- **Browser-side CSV parsing:** Client-side parsing shifts CPU load off the backend server, which is highly scalable, but it relies on browser memory constraints.
+- **Ethereal as test SMTP:** Protects users from spamming real emails during development but hides real-world delivery complexities like bounces, reputation, and hard blocks.
 
-Document:
+## Demo Instructions
 
-- **conservative rate-limit reservation**: The rate limiter reserves capacity upfront before sending to guarantee limits aren't exceeded, which may lead to brief capacity locks under high concurrency.
-- **SMTP crash window**: If the worker process crashes after sending an email but before updating PostgreSQL, the job may remain stuck in PROCESSING.
-- **15-minute stale-processing threshold**: Provides a wide buffer to accommodate sluggish SMTP servers without premature retries, but delays recovery of genuinely crashed jobs by 15 minutes.
-- **browser-side CSV parsing**: Offloads parsing overhead from the backend, but is constrained by browser memory (though well within the 5MB file upload limit).
-- **Ethereal as test SMTP**: Safely traps and displays emails for development testing without actually delivering them to real addresses.
+1. **Reset State:** Run `cd backend && npm run reset:rate-limit` to clear Redis rate-limiting keys for a clean start.
+2. **Login:** Open the frontend, authenticate via Google OAuth.
+3. **Upload Leads:** Upload a `.csv` or `.txt` file containing test emails.
+4. **Schedule:** Compose a subject and body, set an hourly limit and delay, and schedule the campaign.
+5. **Observe:** Watch the dashboard update statuses in real-time as the worker picks up jobs, processes them, respects the rate limits, and marks them as sent.
