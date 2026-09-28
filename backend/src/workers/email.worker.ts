@@ -5,6 +5,10 @@ import {
 } from "bullmq";
 
 import {
+    reconcileQueues
+} from "../services/queue-reconciliation.service.js";
+
+import {
     CampaignStatus,
     EmailJobStatus
 } from "@prisma/client";
@@ -141,14 +145,17 @@ async function rateLimitAndDelayJob(
     throw new DelayedError();
 }
 
-const worker =
-    new Worker<EmailJobData>(
-        EMAIL_QUEUE_NAME,
+async function startWorker() {
+    await reconcileQueues();
 
-        async (
-            job: Job<EmailJobData>,
-            token?: string
-        ) => {
+    const worker =
+        new Worker<EmailJobData>(
+            EMAIL_QUEUE_NAME,
+
+            async (
+                job: Job<EmailJobData>,
+                token?: string
+            ) => {
             const {
                 emailJobId,
                 campaignId,
@@ -475,56 +482,78 @@ const worker =
         }
     );
 
-worker.on("ready", () => {
-    console.log(
-        `✅ Email worker ready | concurrency=${env.WORKER_CONCURRENCY}`
-    );
-});
+    worker.on("ready", () => {
+        console.log(
+            `✅ Email worker ready | concurrency=${env.WORKER_CONCURRENCY}`
+        );
+    });
 
-worker.on("completed", (job) => {
-    console.log(
-        `✅ BullMQ job completed: ${job.id}`
-    );
-});
+    worker.on("completed", (job) => {
+        console.log(
+            `✅ BullMQ job completed: ${job.id}`
+        );
+    });
 
-worker.on("failed", (job, error) => {
-    console.error(
-        `❌ BullMQ job failed: ${job?.id}`,
-        error.message
-    );
-});
+    worker.on("failed", (job, error) => {
+        console.error(
+            `❌ BullMQ job failed: ${job?.id}`,
+            error.message
+        );
+    });
 
-worker.on("error", (error) => {
-    console.error(
-        "❌ Worker error:",
-        error
-    );
-});
+    worker.on("error", (error) => {
+        console.error(
+            "❌ Worker error:",
+            error
+        );
+    });
 
-async function shutdown(
-    signal: string
-) {
-    console.log(
-        `\n${signal} received. Shutting down worker...`
-    );
+    async function shutdown(
+        signal: string
+    ) {
+        console.log(
+            `\n${signal} received. Shutting down worker...`
+        );
 
-    await worker.close();
+        await worker.close();
 
-    await prisma.$disconnect();
+        await prisma.$disconnect();
 
-    await redisConnection.quit();
+        await redisConnection.quit();
 
-    console.log(
-        "✅ Worker shutdown complete"
-    );
+        console.log(
+            "✅ Worker shutdown complete"
+        );
 
-    process.exit(0);
+        process.exit(0);
+    }
+
+    process.on("SIGINT", () => {
+        void shutdown("SIGINT");
+    });
+
+    process.on("SIGTERM", () => {
+        void shutdown("SIGTERM");
+    });
+
+    return worker;
 }
 
-process.on("SIGINT", () => {
-    void shutdown("SIGINT");
-});
+void startWorker().catch(
+    async (error) => {
+        console.error(
+            "❌ Worker startup failed:",
+            error
+        );
 
-process.on("SIGTERM", () => {
-    void shutdown("SIGTERM");
-});
+        await prisma
+            .$disconnect()
+            .catch(() => {});
+
+        await redisConnection
+            .quit()
+            .catch(() => {});
+
+        process.exit(1);
+    }
+);

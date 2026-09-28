@@ -9,6 +9,8 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "start:worker": "node dist/workers/email.worker.js",
+    "reconcile": "tsx src/utils/reconcile-queue.ts",
+    "reset:rate-limit": "tsx src/utils/reset-rate-limit.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio"

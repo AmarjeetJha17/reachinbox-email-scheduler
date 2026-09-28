@@ -1,7 +1,9 @@
 import type { Request, Response } from "express";
 import { prisma } from "../config/database.js";
 import { redisConnection } from "../config/redis.js";
-
+import {
+    emailQueue
+} from "../queues/email.queue.js";
 export async function healthCheck(
     _req: Request,
     res: Response
@@ -10,6 +12,7 @@ export async function healthCheck(
 
     let database = "unknown";
     let redis = "unknown";
+    let queue = "unknown";
 
     try {
         await prisma.$queryRaw`SELECT 1`;
@@ -27,7 +30,17 @@ export async function healthCheck(
         redis = "unhealthy";
     }
 
-    const healthy = database === "healthy" && redis === "healthy";
+    try {
+        await emailQueue.waitUntilReady();
+        queue = "healthy";
+    } catch {
+        queue = "unhealthy";
+    }
+
+    const healthy =
+        database === "healthy" &&
+        redis === "healthy" &&
+        queue === "healthy";
 
     res.status(healthy ? 200 : 503).json({
         success: healthy,
@@ -36,7 +49,8 @@ export async function healthCheck(
         timestamp: new Date().toISOString(),
         dependencies: {
             database,
-            redis
+            redis,
+            queue
         },
         responseTimeMs: Date.now() - startedAt
     });
