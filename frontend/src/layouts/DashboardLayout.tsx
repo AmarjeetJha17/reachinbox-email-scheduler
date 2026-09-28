@@ -112,6 +112,20 @@ export function DashboardLayout() {
                     >
                         Compose
                     </NavLink>
+
+                    <NavLink
+                      to="/dashboard/senders"
+                      className={({ isActive }) =>
+                        [
+                          "rounded-lg px-4 py-2.5 text-sm font-medium transition",
+                          isActive
+                            ? "bg-neutral-950 text-white"
+                            : "text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900"
+                        ].join(" ")
+                      }
+                    >
+                      Senders
+                    </NavLink>
                 </nav>
 
                 <Outlet />

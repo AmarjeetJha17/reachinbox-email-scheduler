@@ -2,37 +2,194 @@ services:
 
   postgres:
     image: postgres:17-alpine
+
     container_name: reachinbox-postgres
+
     restart: unless-stopped
+
     environment:
       POSTGRES_USER: reachinbox
       POSTGRES_PASSWORD: reachinbox_dev
       POSTGRES_DB: reachinbox
+
     ports:
       - "5432:5432"
+
     volumes:
       - postgres_data:/var/lib/postgresql/data
+
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U reachinbox -d reachinbox"]
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U reachinbox -d reachinbox"
+        ]
+
       interval: 5s
       timeout: 5s
       retries: 10
 
+
   redis:
     image: redis:7-alpine
+
     container_name: reachinbox-redis
+
     restart: unless-stopped
-    command: redis-server --appendonly yes
+
+    command:
+      [
+        "redis-server",
+        "--appendonly",
+        "yes"
+      ]
+
     ports:
       - "6379:6379"
+
     volumes:
       - redis_data:/data
+
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test:
+        [
+          "CMD",
+          "redis-cli",
+          "ping"
+        ]
+
       interval: 5s
       timeout: 3s
       retries: 10
 
+
+  backend:
+    build:
+      context: ./backend
+
+    container_name: reachinbox-backend
+
+    restart: unless-stopped
+
+    environment:
+
+      NODE_ENV: production
+
+      PORT: 4000
+
+      DATABASE_URL: >-
+        postgresql://reachinbox:reachinbox_dev@postgres:5432/reachinbox
+
+      REDIS_URL: redis://redis:6379
+
+      WEB_ORIGIN: http://localhost:5173
+
+      WORKER_CONCURRENCY: 10
+
+      EMAIL_SEND_DELAY_MS: 2000
+
+      MAX_EMAILS_PER_HOUR_PER_SENDER: 200
+
+      JOB_RETRY_ATTEMPTS: 3
+
+      JOB_BACKOFF_MS: 5000
+
+      SESSION_SECRET: ${SESSION_SECRET}
+
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+
+      GOOGLE_CALLBACK_URL: ${GOOGLE_CALLBACK_URL}
+
+      SMTP_ENCRYPTION_KEY: ${SMTP_ENCRYPTION_KEY}
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+      redis:
+        condition: service_healthy
+
+    ports:
+      - "4000:4000"
+
+
+  worker:
+    build:
+      context: ./backend
+
+    container_name: reachinbox-worker
+
+    restart: unless-stopped
+
+    command:
+      [
+        "node",
+        "dist/workers/email.worker.js"
+      ]
+
+    environment:
+
+      NODE_ENV: production
+
+      PORT: 4000
+
+      DATABASE_URL: >-
+        postgresql://reachinbox:reachinbox_dev@postgres:5432/reachinbox
+
+      REDIS_URL: redis://redis:6379
+
+      WEB_ORIGIN: http://localhost:5173
+
+      WORKER_CONCURRENCY: 10
+
+      EMAIL_SEND_DELAY_MS: 2000
+
+      MAX_EMAILS_PER_HOUR_PER_SENDER: 200
+
+      JOB_RETRY_ATTEMPTS: 3
+
+      JOB_BACKOFF_MS: 5000
+
+      SESSION_SECRET: ${SESSION_SECRET}
+
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+
+      GOOGLE_CALLBACK_URL: ${GOOGLE_CALLBACK_URL}
+
+      SMTP_ENCRYPTION_KEY: ${SMTP_ENCRYPTION_KEY}
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+      redis:
+        condition: service_healthy
+
+
+  frontend:
+    build:
+      context: ./frontend
+
+      args:
+        VITE_API_URL: http://localhost:4000/api
+
+    container_name: reachinbox-frontend
+
+    restart: unless-stopped
+
+    depends_on:
+      - backend
+
+    ports:
+      - "5173:80"
+
+
 volumes:
+
   postgres_data:
+
   redis_data:

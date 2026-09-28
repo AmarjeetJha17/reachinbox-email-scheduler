@@ -26,6 +26,10 @@ import {
   ComposePage
 } from "./pages/ComposePage";
 
+import {
+  SendersPage
+} from "./pages/SendersPage";
+
 export default function App() {
   return (
     <AuthProvider>
@@ -48,6 +52,11 @@ export default function App() {
             <Route
               path="compose"
               element={<ComposePage />}
+            />
+
+            <Route
+              path="senders"
+              element={<SendersPage />}
             />
           </Route>
         </Route>

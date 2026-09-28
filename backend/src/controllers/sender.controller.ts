@@ -1,3 +1,6 @@
+import { createSenderSchema } from "../types/sender.types.js";
+import { createSender } from "../services/sender.service.js";
+
 import type {
     Response,
     NextFunction
@@ -47,4 +50,33 @@ export async function getSenders(
     } catch (error) {
         next(error);
     }
+}
+
+export async function createSenderController(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const parsed = createSenderSchema.safeParse(req.body);
+
+    if (!parsed.success) {
+      res.status(400).json({
+        success: false,
+        message: "Invalid sender configuration",
+        errors: parsed.error.flatten()
+      });
+      return;
+    }
+
+    const sender = await createSender(req.user!.id, parsed.data);
+
+    res.status(201).json({
+      success: true,
+      message: "Sender created successfully",
+      data: { sender }
+    });
+  } catch (error) {
+    next(error);
+  }
 }
