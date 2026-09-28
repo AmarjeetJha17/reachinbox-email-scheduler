@@ -8,6 +8,8 @@ import { env } from "./config/env.js";
 import healthRoutes from "./routes/health.routes.js";
 import campaignRoutes from "./routes/campaign.routes.js";
 import authRoutes from "./routes/auth.routes.js";
+import senderRoutes from "./routes/sender.routes.js";
+import emailRoutes from "./routes/email.routes.js";
 import { errorHandler } from "./middleware/error.middleware.js";
 
 export const app = express();
@@ -45,6 +47,16 @@ app.use(
 app.use(
     "/api/auth",
     authRoutes
+);
+
+app.use(
+    "/api/senders",
+    senderRoutes
+);
+
+app.use(
+    "/api/emails",
+    emailRoutes
 );
 
 app.use(
