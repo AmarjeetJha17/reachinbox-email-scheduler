@@ -2,8 +2,6 @@ import { z } from "zod";
 
 export const scheduleCampaignSchema = z
     .object({
-        userId: z.string().uuid(),
-
         senderId: z.string().uuid(),
 
         subject: z
@@ -79,4 +77,6 @@ export const scheduleCampaignSchema = z
 
 export type ScheduleCampaignInput = z.infer<
     typeof scheduleCampaignSchema
->;
+> & {
+    userId: string;
+};
