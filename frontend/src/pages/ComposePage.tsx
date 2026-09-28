@@ -6,7 +6,6 @@ import {
 
 import {
     useEffect,
-    useMemo,
     useState
 } from "react";
 import type { FormEvent } from "react";
@@ -17,6 +16,7 @@ import {
 } from "react-router-dom";
 
 import { api } from "../services/api";
+import { LeadUploader } from "../components/LeadUploader";
 import type {
     SenderAccount,
     ScheduleEmailRequest
@@ -62,9 +62,9 @@ export function ComposePage() {
     ] = useState("20");
 
     const [
-        recipientsText,
-        setRecipientsText
-    ] = useState("");
+        recipients,
+        setRecipients
+    ] = useState<string[]>([]);
 
     const [
         submitting,
@@ -128,21 +128,7 @@ export function ComposePage() {
         void loadSenders();
     }, []);
 
-    const recipients =
-        useMemo(() => {
-            const lines =
-                recipientsText
-                    .split(/[\n,;]/)
-                    .map(
-                        (value) =>
-                            value.trim().toLowerCase()
-                    )
-                    .filter(Boolean);
 
-            return [
-                ...new Set(lines)
-            ];
-        }, [recipientsText]);
 
     async function handleSubmit(
         event: FormEvent
@@ -160,7 +146,7 @@ export function ComposePage() {
             recipients.length === 0
         ) {
             setError(
-                "Please complete all required fields."
+                "Please select a sender, add a message, choose a start time, and provide at least one valid recipient."
             );
 
             return;
@@ -206,7 +192,7 @@ export function ComposePage() {
 
             setSubject("");
             setBody("");
-            setRecipientsText("");
+            setRecipients([]);
 
             setTimeout(() => {
                 navigate("/dashboard");
@@ -357,38 +343,51 @@ export function ComposePage() {
                         />
                     </div>
 
-                    <div>
-                        <div className="mb-2 flex items-center justify-between">
-                            <label
-                                htmlFor="recipients"
-                                className="block text-sm font-medium text-neutral-800"
-                            >
-                                Recipients
-                            </label>
+                    <LeadUploader
+                        emails={recipients}
+                        onEmailsChange={setRecipients}
+                    />
 
-                            <span className="text-xs text-neutral-400">
-                                {recipients.length} detected
-                            </span>
-                        </div>
+                    <div className="mt-5">
+                        <label
+                            htmlFor="manualRecipients"
+                            className="mb-2 block text-sm font-medium text-neutral-800"
+                        >
+                            Or enter recipients manually
+                        </label>
 
                         <textarea
-                            id="recipients"
-                            value={recipientsText}
-                            onChange={(event) =>
-                                setRecipientsText(
-                                    event.target.value
-                                )
-                            }
-                            placeholder={`recipient1@example.com
-recipient2@example.com`}
-                            rows={7}
+                            id="manualRecipients"
+                            placeholder={`recipient1@example.com\nrecipient2@example.com`}
+                            rows={5}
                             className="w-full resize-y rounded-xl border border-neutral-200 px-3 py-3 font-mono text-sm outline-none transition placeholder:text-neutral-300 focus:border-neutral-500"
-                            required
+                            onChange={(event) => {
+                                const manualEmails =
+                                    event.target.value
+                                        .split(/[\n,;]/)
+                                        .map(
+                                            (value) =>
+                                                value
+                                                    .trim()
+                                                    .toLowerCase()
+                                        )
+                                        .filter(
+                                            (value) =>
+                                                /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(
+                                                    value
+                                                )
+                                        );
+
+                                const unique = [
+                                    ...new Set(manualEmails)
+                                ];
+
+                                setRecipients(unique);
+                            }}
                         />
 
                         <p className="mt-2 text-xs text-neutral-400">
-                            For now, enter one email per line, comma, or
-                            semicolon. CSV import is added in Phase 8.
+                            Upload a file above or use manual entry for quick testing.
                         </p>
                     </div>
                 </section>
