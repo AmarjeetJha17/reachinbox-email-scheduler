@@ -1,13 +1,25 @@
-import { Job, Worker } from "bullmq";
+import {
+    DelayedError,
+    Job,
+    Worker
+} from "bullmq";
 
 import {
-    EmailJobStatus,
-    CampaignStatus
+    CampaignStatus,
+    EmailJobStatus
 } from "@prisma/client";
 
-import { redisConnection } from "../config/redis.js";
-import { env } from "../config/env.js";
-import { prisma } from "../config/database.js";
+import {
+    redisConnection
+} from "../config/redis.js";
+
+import {
+    env
+} from "../config/env.js";
+
+import {
+    prisma
+} from "../config/database.js";
 
 import {
     EMAIL_QUEUE_NAME,
@@ -17,6 +29,10 @@ import {
 import {
     sendEmail
 } from "../services/email.service.js";
+
+import {
+    reserveSendSlot
+} from "../services/rate-limiter.service.js";
 
 async function refreshCampaignStatus(
     campaignId: string
@@ -65,226 +81,399 @@ async function refreshCampaignStatus(
     });
 }
 
-const worker = new Worker<EmailJobData>(
-    EMAIL_QUEUE_NAME,
+async function rateLimitAndDelayJob(
+    job: Job<EmailJobData>,
+    emailJobId: string,
+    nextAllowedAt: number,
+    token?: string
+): Promise<never> {
+    if (!token) {
+        throw new Error(
+            `Missing BullMQ worker token for delayed job ${job.id}`
+        );
+    }
 
-    async (job: Job<EmailJobData>) => {
-        const {
-            emailJobId,
-            campaignId,
-            senderId
-        } = job.data;
+    const delayUntil =
+        Math.max(
+            nextAllowedAt,
+            Date.now() + 100
+        );
 
-        /*
-         * STEP 1
-         * Atomically claim the database job.
-         *
-         * This prevents two workers from processing the
-         * same logical EmailJob simultaneously.
-         */
-        const claim =
-            await prisma.emailJob.updateMany({
-                where: {
-                    id: emailJobId,
+    await prisma.emailJob.updateMany({
+        where: {
+            id: emailJobId,
 
-                    status: {
-                        in: [
-                            EmailJobStatus.SCHEDULED,
-                            EmailJobStatus.QUEUED,
-                            EmailJobStatus.RETRYING,
-                            EmailJobStatus.RATE_LIMITED
-                        ]
-                    }
-                },
+            status:
+                EmailJobStatus.PROCESSING
+        },
 
-                data: {
-                    status: EmailJobStatus.PROCESSING,
+        data: {
+            status:
+                EmailJobStatus.RATE_LIMITED,
 
-                    attemptCount: {
-                        increment: 1
+            nextAttemptAt:
+                new Date(delayUntil)
+        }
+    });
+
+    await job.moveToDelayed(
+        delayUntil,
+        token
+    );
+
+    console.log("");
+    console.log("======================================");
+    console.log("⏳ Email rate limited");
+    console.log("Job:", emailJobId);
+    console.log(
+        "Rescheduled:",
+        new Date(delayUntil).toISOString()
+    );
+    console.log("======================================");
+
+    /*
+     * This tells BullMQ:
+     *
+     * "The job has intentionally been moved
+     * back to delayed state. Do not mark it
+     * completed or failed."
+     */
+    throw new DelayedError();
+}
+
+const worker =
+    new Worker<EmailJobData>(
+        EMAIL_QUEUE_NAME,
+
+        async (
+            job: Job<EmailJobData>,
+            token?: string
+        ) => {
+            const {
+                emailJobId,
+                campaignId,
+                senderId
+            } = job.data;
+
+            /*
+             * --------------------------------------------------
+             * STEP 1 — Claim the logical EmailJob
+             * --------------------------------------------------
+             */
+            const claim =
+                await prisma.emailJob.updateMany({
+                    where: {
+                        id: emailJobId,
+
+                        status: {
+                            in: [
+                                EmailJobStatus.SCHEDULED,
+                                EmailJobStatus.QUEUED,
+                                EmailJobStatus.RETRYING,
+                                EmailJobStatus.RATE_LIMITED
+                            ]
+                        }
                     },
 
-                    errorMessage: null
-                }
-            });
+                    data: {
+                        status:
+                            EmailJobStatus.PROCESSING,
 
-        /*
-         * Another worker already owns/completed it.
-         */
-        if (claim.count === 0) {
-            console.log(
-                `↩️ Skipping already-claimed job ${emailJobId}`
-            );
+                        errorMessage: null
+                    }
+                });
 
-            return {
-                skipped: true,
-                reason: "already_processed_or_processing"
-            };
-        }
-
-        const emailJob =
-            await prisma.emailJob.findUnique({
-                where: {
-                    id: emailJobId
-                }
-            });
-
-        if (!emailJob) {
-            throw new Error(
-                `EmailJob ${emailJobId} no longer exists`
-            );
-        }
-
-        const sender =
-            await prisma.senderAccount.findUnique({
-                where: {
-                    id: senderId
-                }
-            });
-
-        if (!sender) {
-            throw new Error(
-                `Sender ${senderId} no longer exists`
-            );
-        }
-
-        console.log("");
-        console.log("======================================");
-        console.log("📨 Processing email");
-        console.log("Job:", emailJob.id);
-        console.log("Campaign:", campaignId);
-        console.log("To:", emailJob.recipientEmail);
-        console.log("Attempt:", emailJob.attemptCount);
-        console.log("======================================");
-
-        try {
-            const result =
-                await sendEmail(sender, emailJob);
-
-            await prisma.emailJob.update({
-                where: {
-                    id: emailJob.id
-                },
-
-                data: {
-                    status: EmailJobStatus.SENT,
-
-                    sentAt: new Date(),
-
-                    providerMessageId:
-                        result.messageId,
-
-                    previewUrl:
-                        result.previewUrl,
-
-                    errorMessage: null
-                }
-            });
-
-            await refreshCampaignStatus(
-                campaignId
-            );
-
-            console.log(
-                `✅ Email sent: ${emailJob.recipientEmail}`
-            );
-
-            if (result.previewUrl) {
+            /*
+             * Another worker already owns/completed
+             * this logical email.
+             */
+            if (claim.count === 0) {
                 console.log(
-                    `🔗 Preview: ${result.previewUrl}`
+                    `↩️ Skipping already-claimed job ${emailJobId}`
+                );
+
+                return {
+                    skipped: true,
+                    reason:
+                        "already_claimed_or_completed"
+                };
+            }
+
+            /*
+             * --------------------------------------------------
+             * STEP 2 — Load current persistent state
+             * --------------------------------------------------
+             */
+            const emailJob =
+                await prisma.emailJob.findUnique({
+                    where: {
+                        id: emailJobId
+                    },
+
+                    include: {
+                        campaign: true
+                    }
+                });
+
+            if (!emailJob) {
+                throw new Error(
+                    `EmailJob ${emailJobId} no longer exists`
                 );
             }
 
-            return {
-                sent: true,
+            /*
+             * Already sent due to an unusual recovery race.
+             */
+            if (
+                emailJob.status ===
+                EmailJobStatus.SENT
+            ) {
+                return {
+                    skipped: true,
+                    reason: "already_sent"
+                };
+            }
 
-                messageId:
-                    result.messageId,
+            const sender =
+                await prisma.senderAccount.findUnique({
+                    where: {
+                        id: senderId
+                    }
+                });
 
-                previewUrl:
-                    result.previewUrl
-            };
-        } catch (error) {
-            const message =
-                error instanceof Error
-                    ? error.message
-                    : "Unknown SMTP error";
+            if (!sender) {
+                throw new Error(
+                    `Sender ${senderId} no longer exists`
+                );
+            }
 
             /*
-             * BullMQ's attemptsMade is the number of
-             * previous failed processing attempts.
-             *
-             * If this error exhausts configured attempts,
-             * mark the DB job permanently FAILED.
-             * Otherwise leave it RETRYING so the next
-             * BullMQ attempt can claim it.
+             * The effective hourly limit is the tighter
+             * of sender-level and campaign-level settings.
              */
-            const maxAttempts =
-                job.opts.attempts ??
-                env.JOB_RETRY_ATTEMPTS;
+            const hourlyLimit =
+                Math.min(
+                    sender.hourlyLimit,
+                    emailJob.campaign.hourlyLimit
+                );
 
-            const nextAttemptWillBeFinal =
-                job.attemptsMade + 1 >= maxAttempts;
+            /*
+             * --------------------------------------------------
+             * STEP 3 — Distributed Redis rate-limit reservation
+             * --------------------------------------------------
+             */
+            const rateLimitResult =
+                await reserveSendSlot({
+                    senderId: sender.id,
 
-            await prisma.emailJob.updateMany({
-                where: {
-                    id: emailJob.id,
+                    maxEmailsPerHour:
+                        hourlyLimit,
 
-                    status:
-                        EmailJobStatus.PROCESSING
-                },
+                    minDelayMs:
+                        emailJob.campaign
+                            .delayBetweenEmails
+                });
 
-                data: {
-                    status:
-                        nextAttemptWillBeFinal
-                            ? EmailJobStatus.FAILED
-                            : EmailJobStatus.RETRYING,
+            if (!rateLimitResult.allowed) {
+                await rateLimitAndDelayJob(
+                    job,
+                    emailJob.id,
 
-                    failedAt:
-                        nextAttemptWillBeFinal
-                            ? new Date()
-                            : null,
+                    rateLimitResult.nextAllowedAt,
 
-                    errorMessage: message,
+                    token
+                );
+            }
 
-                    nextAttemptAt:
-                        nextAttemptWillBeFinal
-                            ? null
-                            : new Date(
-                                Date.now() +
-                                env.JOB_BACKOFF_MS
-                            )
-                }
-            });
+            /*
+             * --------------------------------------------------
+             * STEP 4 — Actual send attempt
+             * --------------------------------------------------
+             */
+            const updatedAttempt =
+                await prisma.emailJob.updateMany({
+                    where: {
+                        id: emailJob.id,
 
-            if (nextAttemptWillBeFinal) {
+                        status:
+                            EmailJobStatus.PROCESSING
+                    },
+
+                    data: {
+                        attemptCount: {
+                            increment: 1
+                        }
+                    }
+                });
+
+            if (updatedAttempt.count === 0) {
+                return {
+                    skipped: true,
+                    reason:
+                        "lost_processing_claim"
+                };
+            }
+
+            console.log("");
+            console.log("======================================");
+            console.log("📨 Sending email");
+            console.log("Job:", emailJob.id);
+            console.log(
+                "Campaign:",
+                campaignId
+            );
+            console.log(
+                "To:",
+                emailJob.recipientEmail
+            );
+            console.log(
+                "Attempt:",
+                emailJob.attemptCount + 1
+            );
+            console.log(
+                "Hourly limit:",
+                hourlyLimit
+            );
+            console.log(
+                "Rate count:",
+                rateLimitResult.count
+            );
+            console.log("======================================");
+
+            try {
+                const result =
+                    await sendEmail(
+                        sender,
+                        emailJob
+                    );
+
+                /*
+                 * ------------------------------------------------
+                 * STEP 5 — Persist successful delivery
+                 * ------------------------------------------------
+                 */
+                await prisma.emailJob.update({
+                    where: {
+                        id: emailJob.id
+                    },
+
+                    data: {
+                        status:
+                            EmailJobStatus.SENT,
+
+                        sentAt:
+                            new Date(),
+
+                        providerMessageId:
+                            result.messageId,
+
+                        previewUrl:
+                            result.previewUrl,
+
+                        errorMessage: null,
+
+                        nextAttemptAt: null
+                    }
+                });
+
                 await refreshCampaignStatus(
                     campaignId
                 );
+
+                console.log(
+                    `✅ Email sent: ${emailJob.recipientEmail}`
+                );
+
+                if (result.previewUrl) {
+                    console.log(
+                        `🔗 Preview: ${result.previewUrl}`
+                    );
+                }
+
+                return {
+                    sent: true,
+
+                    messageId:
+                        result.messageId,
+
+                    previewUrl:
+                        result.previewUrl
+                };
+            } catch (error) {
+                const message =
+                    error instanceof Error
+                        ? error.message
+                        : "Unknown SMTP error";
+
+                const maxAttempts =
+                    job.opts.attempts ??
+                    env.JOB_RETRY_ATTEMPTS;
+
+                /*
+                 * BullMQ's attemptsMade is the number
+                 * of previous failed processing attempts.
+                 */
+                const finalAttempt =
+                    job.attemptsMade + 1 >=
+                    maxAttempts;
+
+                await prisma.emailJob.updateMany({
+                    where: {
+                        id: emailJob.id,
+
+                        status:
+                            EmailJobStatus.PROCESSING
+                    },
+
+                    data: {
+                        status:
+                            finalAttempt
+                                ? EmailJobStatus.FAILED
+                                : EmailJobStatus.RETRYING,
+
+                        failedAt:
+                            finalAttempt
+                                ? new Date()
+                                : null,
+
+                        errorMessage:
+                            message,
+
+                        nextAttemptAt:
+                            finalAttempt
+                                ? null
+                                : new Date(
+                                    Date.now() +
+                                    env.JOB_BACKOFF_MS
+                                )
+                    }
+                });
+
+                if (finalAttempt) {
+                    await refreshCampaignStatus(
+                        campaignId
+                    );
+                }
+
+                console.error(
+                    `❌ Email failed: ${emailJob.recipientEmail}`,
+                    message
+                );
+
+                throw error instanceof Error
+                    ? error
+                    : new Error(message);
             }
+        },
 
-            console.error(
-                `❌ Email failed: ${emailJob.recipientEmail}`,
-                message
-            );
+        {
+            connection:
+                redisConnection,
 
-            /*
-             * Important: throw an Error so BullMQ
-             * activates its configured retry mechanism.
-             */
-            throw error instanceof Error
-                ? error
-                : new Error(message);
+            concurrency:
+                env.WORKER_CONCURRENCY
         }
-    },
-
-    {
-        connection: redisConnection,
-
-        concurrency:
-            env.WORKER_CONCURRENCY
-    }
-);
+    );
 
 worker.on("ready", () => {
     console.log(
